@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
+import 'package:provider/provider.dart';
 
 import '../models/product.dart';
-import '../services/product_api_service.dart';
+import '../providers/product_provider.dart';
 import 'add_product_page.dart';
 import 'product_detail_page.dart';
 
@@ -14,19 +14,19 @@ class ProductListPage extends StatefulWidget {
 }
 
 class _ProductListPageState extends State<ProductListPage> {
-  bool isLoading = false;
-  String? errorMessage;
-  List<Product> products = [];
-  final ProductApiService _api = ProductApiService();
   final _searchController = TextEditingController();
   String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
-    _loadProducts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<ProductProvider>().loadProducts();
+    });
     _searchController.addListener(() {
-      setState(() => _searchQuery = _searchController.text.trim().toLowerCase());
+      setState(
+        () => _searchQuery = _searchController.text.trim().toLowerCase(),
+      );
     });
   }
 
@@ -36,28 +36,8 @@ class _ProductListPageState extends State<ProductListPage> {
     super.dispose();
   }
 
-  Future<void> _loadProducts() async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
-    try {
-      final loadedProducts = await _api.getProducts();
-      if (!mounted) return;
-      setState(() {
-        products = loadedProducts;
-        isLoading = false;
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        isLoading = false;
-        errorMessage = 'Gagal memuat produk: $error';
-      });
-    }
-  }
-
-  List<Product> get _filteredProducts => products.where((product) {
+  List<Product> _filteredProducts(List<Product> products) =>
+      products.where((product) {
         return product.name.toLowerCase().contains(_searchQuery) ||
             product.category.toLowerCase().contains(_searchQuery);
       }).toList();
@@ -69,51 +49,46 @@ class _ProductListPageState extends State<ProductListPage> {
     );
     if (product == null || !mounted) return;
     await _runMutation(
-      () async {
-        final created = await _api.createProduct(product);
-        if (mounted) setState(() => products = [...products, created]);
-      },
+      () => context.read<ProductProvider>().addProduct(product),
       'Produk berhasil ditambahkan.',
     );
   }
 
-  Future<void> _editProduct(int index) async {
+  Future<void> _editProduct(Product currentProduct) async {
     final product = await Navigator.push<Product>(
       context,
-      MaterialPageRoute(builder: (_) => AddProductPage(product: products[index])),
+      MaterialPageRoute(
+        builder: (_) => AddProductPage(product: currentProduct),
+      ),
     );
     if (product == null || !mounted) return;
     await _runMutation(
-      () async {
-        final updated = await _api.updateProduct(product);
-        if (mounted) {
-          setState(() {
-            products = [...products]..[index] = updated;
-          });
-        }
-      },
+      () => context.read<ProductProvider>().updateProduct(product),
       'Produk berhasil diperbarui.',
     );
   }
 
-  Future<void> _deleteProduct(int index) async {
+  Future<void> _deleteProduct(Product product) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Hapus produk?'),
-        content: Text('Produk "${products[index].name}" akan dihapus.'),
+        content: Text('Produk "${product.name}" akan dihapus.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Batal')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Hapus')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Hapus'),
+          ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
     await _runMutation(
-      () async {
-        await _api.deleteProduct(products[index].id);
-        if (mounted) setState(() => products = [...products]..removeAt(index));
-      },
+      () => context.read<ProductProvider>().deleteProduct(product),
       'Produk berhasil dihapus.',
     );
   }
@@ -122,39 +97,21 @@ class _ProductListPageState extends State<ProductListPage> {
     Future<void> Function() action,
     String successMessage,
   ) async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
     try {
       await action();
       if (!mounted) return;
-      setState(() => isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(successMessage)),
-      );
-    } on DioException catch (error) {
-      if (!mounted) return;
-      setState(() {
-        isLoading = false;
-        errorMessage = error.response?.data?.toString() ?? error.message;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage ?? 'Terjadi kesalahan.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
     } catch (error) {
       if (!mounted) return;
-      setState(() {
-        isLoading = false;
-        errorMessage = error.toString();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage!)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
     }
   }
 
-  Future<void> _openDetails(Product product, int index) async {
+  Future<void> _openDetails(Product product) async {
     await Navigator.push<void>(
       context,
       MaterialPageRoute(
@@ -162,11 +119,11 @@ class _ProductListPageState extends State<ProductListPage> {
           product: product,
           onEdit: () {
             Navigator.pop(context);
-            _editProduct(index);
+            _editProduct(product);
           },
           onDelete: () {
             Navigator.pop(context);
-            _deleteProduct(index);
+            _deleteProduct(product);
           },
         ),
       ),
@@ -175,7 +132,9 @@ class _ProductListPageState extends State<ProductListPage> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredProducts = _filteredProducts;
+    final provider = context.watch<ProductProvider>();
+    final products = provider.products;
+    final filteredProducts = _filteredProducts(products);
     return Scaffold(
       appBar: AppBar(title: const Text('Simple Inventory')),
       body: Column(
@@ -201,7 +160,7 @@ class _ProductListPageState extends State<ProductListPage> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _addProduct,
+        onPressed: provider.isLoading ? null : _addProduct,
         tooltip: 'Tambah produk',
         child: const Icon(Icons.add),
       ),
@@ -209,22 +168,32 @@ class _ProductListPageState extends State<ProductListPage> {
   }
 
   Widget _buildContent(List<Product> filteredProducts) {
-    if (isLoading) return const Center(child: CircularProgressIndicator());
-    if (errorMessage != null) {
+    final provider = context.watch<ProductProvider>();
+    if (provider.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (provider.errorMessage != null) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(errorMessage!, textAlign: TextAlign.center),
+            Text(provider.errorMessage!, textAlign: TextAlign.center),
             const SizedBox(height: 12),
-            ElevatedButton(onPressed: _loadProducts, child: const Text('Coba Lagi')),
+            ElevatedButton(
+              onPressed: provider.loadProducts,
+              child: const Text('Coba Lagi'),
+            ),
           ],
         ),
       );
     }
     if (filteredProducts.isEmpty) {
       return Center(
-        child: Text(_searchQuery.isEmpty ? 'Belum ada produk.' : 'Produk tidak ditemukan.'),
+        child: Text(
+          _searchQuery.isEmpty
+              ? 'Belum ada produk.'
+              : 'Produk tidak ditemukan.',
+        ),
       );
     }
     return ListView.builder(
@@ -232,24 +201,30 @@ class _ProductListPageState extends State<ProductListPage> {
       itemCount: filteredProducts.length,
       itemBuilder: (context, index) {
         final product = filteredProducts[index];
-        final productIndex = products.indexOf(product);
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           child: ListTile(
-            onTap: () => _openDetails(product, productIndex),
+            onTap: () => _openDetails(product),
             leading: Image.network(
               product.imageUrl,
               width: 52,
               height: 52,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => const Icon(Icons.image),
+              errorBuilder: (context, error, stackTrace) =>
+                  const Icon(Icons.image),
             ),
             title: Text(product.name),
-            subtitle: Text('Rp ${product.price.toStringAsFixed(0)} | Stok: ${product.quantity}'),
+            subtitle: Text(
+              'Rp ${product.price.toStringAsFixed(0)} | Stok: ${product.quantity}',
+            ),
             trailing: PopupMenuButton<String>(
               onSelected: (value) {
-                if (value == 'edit') _editProduct(productIndex);
-                if (value == 'delete') _deleteProduct(productIndex);
+                if (value == 'edit') {
+                  _editProduct(product);
+                }
+                if (value == 'delete') {
+                  _deleteProduct(product);
+                }
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(value: 'edit', child: Text('Edit')),
